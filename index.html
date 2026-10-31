@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Consulta de Partituras</title>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 16px; background: #f5f7fa; color: #1e293b; }
+    h1 { font-size: 1.4rem; margin: 0 0 12px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .toolbar input, .toolbar select, .toolbar button {
+      padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; background: #fff;
+    }
+    .toolbar input { flex: 1 1 200px; }
+    .toolbar button { cursor: pointer; background: #2563eb; color: #fff; border: none; font-weight: 500; }
+    .toolbar button:hover { background: #1d4ed8; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .filters select { min-width: 130px; }
+    .table-wrap { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; min-width: 800px; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+    th { background: #f1f5f9; cursor: pointer; user-select: none; position: sticky; top: 0; }
+    th:hover { background: #e2e8f0; }
+    tr:hover td { background: #f8fafc; cursor: pointer; }
+    .empty { padding: 24px; text-align: center; color: #64748b; }
+    /* 手机端：表格横向滚动，工具栏换行 */
+    @media (max-width: 640px) {
+      body { padding: 8px; }
+      th, td { padding: 6px 8px; font-size: 0.78rem; }
+      .toolbar input { flex: 1 1 100%; }
+    }
+    /* 弹窗 */
+    .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100; align-items: center; justify-content: center; padding: 16px; }
+    .modal-bg.open { display: flex; }
+    .modal { background: #fff; border-radius: 10px; max-width: 520px; width: 100%; padding: 20px; max-height: 80vh; overflow-y: auto; position: relative; }
+    .modal h2 { margin: 0 0 12px; font-size: 1.15rem; }
+    .modal .close { position: absolute; top: 10px; right: 14px; font-size: 1.5rem; cursor: pointer; color: #64748b; }
+    .modal .field { margin-bottom: 8px; font-size: 0.9rem; }
+    .modal .field strong { display: inline-block; min-width: 100px; color: #475569; }
+    .modal a { color: #2563eb; word-break: break-all; }
+  </style>
+</head>
+<body>
+
+<h1>🎵 Consulta de Partituras</h1>
+
+<div class="toolbar">
+  <input type="text" id="globalSearch" placeholder="Busca geral (música, intérprete, compositor...)">
+  <button id="exportBtn">Exportar CSV</button>
+</div>
+
+<div class="filters" id="filters">
+  <!-- 动态生成下拉筛选 -->
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr id="tableHead"></tr></thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+  <div id="emptyMsg" class="empty" style="display:none;">Nenhum resultado encontrado.</div>
+</div>
+
+<!-- 详情弹窗 -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <span class="close" id="modalClose">&times;</span>
+    <h2 id="modalTitle"></h2>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+const COLUMNS = [
+  { key: 'PDF_Origem', label: 'PDF Origem' },
+  { key: 'Musica', label: 'Música' },
+  { key: 'Pagina', label: 'Página' },
+  { key: 'Interprete', label: 'Intérprete' },
+  { key: 'Compositores', label: 'Compositores' },
+  { key: 'Nacionalidade', label: 'Nacionalidade' },
+  { key: 'Estilo', label: 'Estilo' },
+  { key: 'Ano', label: 'Ano' },
+  { key: 'Youtube', label: 'YouTube' }
+];
+
+let allData = [];
+let filteredData = [];
+let sortKey = null;
+let sortAsc = true;
+
+// 加载数据
+async function loadData() {
+  try {
+    const res = await fetch('songs.json');
+    allData = await res.json();
+    // 兼容字段名：确保 Musica 存在（Excel 里是 "Música" 带重音）
+    allData = allData.map(row => ({
+      ...row,
+      Musica: row.Musica || row['Música'] || '',
+      Ano: row.Ano === 'Não localizado na pesquisa' ? '' : row.Ano,
+    }));
+    filteredData = [...allData];
+    buildFilters();
+    renderTable();
+  } catch (e) {
+    document.getElementById('emptyMsg').style.display = 'block';
+    document.getElementById('emptyMsg').textContent = 'Erro ao carregar songs.json. Verifique se o arquivo está no mesmo diretório.';
+  }
+}
+
+// 构建下拉筛选（仅对有有限值的列生成）
+function buildFilters() {
+  const container = document.getElementById('filters');
+  const filterCols = ['Interprete', 'Nacionalidade', 'Estilo', 'Ano'];
+  container.innerHTML = '';
+  filterCols.forEach(col => {
+    const values = [...new Set(allData.map(r => r[col]).filter(v => v && v !== ''))].sort();
+    if (values.length === 0) return;
+    const select = document.createElement('select');
+    select.dataset.col = col;
+    select.innerHTML = `<option value="">${COLUMNS.find(c=>c.key===col).label} (Todos)</option>` +
+      values.map(v => `<option value="${v}">${v}</option>`).join('');
+    select.addEventListener('change', applyFilters);
+    container.appendChild(select);
+  });
+}
+
+// 应用所有筛选条件
+function applyFilters() {
+  const global = document.getElementById('globalSearch').value.trim().toLowerCase();
+  const selects = document.querySelectorAll('#filters select');
+
+  filteredData = allData.filter(row => {
+    // 全局搜索
+    if (global) {
+      const text = COLUMNS.map(c => row[c.key] ?? '').join(' ').toLowerCase();
+      if (!text.includes(global)) return false;
+    }
+    // 下拉筛选
+    for (const sel of selects) {
+      if (sel.value && String(row[sel.dataset.col] ?? '') !== sel.value) return false;
+    }
+    return true;
+  });
+
+  // 排序
+  if (sortKey) {
+    filteredData.sort((a, b) => {
+      let va = a[sortKey] ?? '', vb = b[sortKey] ?? '';
+      if (sortKey === 'Ano' || sortKey === 'Pagina') { va = Number(va) || 0; vb = Number(vb) || 0; }
+      if (va < vb) return sortAsc ? -1 : 1;
+      if (va > vb) return sortAsc ? 1 : -1;
+      return 0;
+    });
+  }
+
+  renderTable();
+}
+
+// 渲染表格
+function renderTable() {
+  const thead = document.getElementById('tableHead');
+  const tbody = document.getElementById('tableBody');
+  const empty = document.getElementById('emptyMsg');
+
+  // 表头
+  thead.innerHTML = COLUMNS.map(c => {
+    const arrow = sortKey === c.key ? (sortAsc ? ' ▲' : ' ▼') : '';
+    return `<th data-key="${c.key}">${c.label}${arrow}</th>`;
+  }).join('');
+
+  thead.querySelectorAll('th').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      if (sortKey === key) { sortAsc = !sortAsc; } else { sortKey = key; sortAsc = true; }
+      applyFilters();
+    });
+  });
+
+  // 表体
+  if (filteredData.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = filteredData.map((row, idx) => {
+    const cells = COLUMNS.map(c => {
+      let val = row[c.key] ?? '';
+      if (c.key === 'Youtube' && val && val !== 'Link') {
+        return `<td><a href="${val}" target="_blank" rel="noopener">▶ YouTube</a></td>`;
+      }
+      return `<td>${val}</td>`;
+    }).join('');
+    return `<tr data-idx="${idx}">${cells}</tr>`;
+  }).join('');
+
+  // 点击行弹出详情
+  tbody.querySelectorAll('tr').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      // 如果点的是链接，不弹窗
+      if (e.target.tagName === 'A') return;
+      const idx = Number(tr.dataset.idx);
+      showDetail(filteredData[idx]);
+    });
+  });
+}
+
+// 详情弹窗
+function showDetail(row) {
+  document.getElementById('modalTitle').textContent = row.Musica || 'Detalhes';
+  const body = document.getElementById('modalBody');
+  body.innerHTML = COLUMNS.map(c => {
+    let val = row[c.key] ?? '';
+    if (c.key === 'Youtube' && val && val !== 'Link') {
+      val = `<a href="${val}" target="_blank" rel="noopener">${val}</a>`;
+    }
+    return `<div class="field"><strong>${c.label}:</strong> ${val}</div>`;
+  }).join('');
+  document.getElementById('modalBg').classList.add('open');
+}
+
+// 导出 CSV
+function exportCSV() {
+  if (filteredData.length === 0) { alert('Nenhum dado para exportar.'); return; }
+  const headers = COLUMNS.map(c => c.label);
+  const rows = filteredData.map(row =>
+    COLUMNS.map(c => {
+      let v = String(row[c.key] ?? '');
+      // 处理 CSV 中的逗号/引号
+      if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+        v = '"' + v.replace(/"/g, '""') + '"';
+      }
+      return v;
+    }).join(',')
+  );
+  const csv = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'partituras_filtradas.csv';
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+// 事件绑定
+document.getElementById('globalSearch').addEventListener('input', applyFilters);
+document.getElementById('exportBtn').addEventListener('click', exportCSV);
+document.getElementById('modalClose').addEventListener('click', () => document.getElementById('modalBg').classList.remove('open'));
+document.getElementById('modalBg').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.classList.remove('open'); });
+
+// 启动
+loadData();
+</script>
+
+</body>
+</html>
